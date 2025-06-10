@@ -1,0 +1,7 @@
+
+
+HelwanUSBWriter/
+├── main_usb_writer.py
+├── translations.py  # لتضمين الترجمات (يمكنك استخدام ملفك الحالي)
+└── icons/
+    └── usb.png      # أيقونة للبرنامج
