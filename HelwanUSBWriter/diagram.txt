@@ -5,3 +5,4 @@ HelwanUSBWriter/
 ├── translations.py  # لتضمين الترجمات (يمكنك استخدام ملفك الحالي)
 └── icons/
     └── usb.png      # أيقونة للبرنامج
+|__HelwanUSBWriter.desktop
