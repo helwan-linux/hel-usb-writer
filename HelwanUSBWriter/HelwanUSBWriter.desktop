@@ -1,8 +1,8 @@
 [Desktop Entry]
 Name=Helwan USB Writer
 Comment=A powerful tool for writing ISO files to USB drives.
-Exec=python3 /path/to/your/HelwanUSBWriter/main_usb_writer.py
-Icon=/path/to/your/HelwanUSBWriter/icons/usb.png
+Exec=python3 /HelwanUSBWriter/main_usb_writer.py
+Icon=/HelwanUSBWriter/icons/usb.png
 Terminal=false
 Type=Application
 Categories=Utility;System;
