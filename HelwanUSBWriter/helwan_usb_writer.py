@@ -11,6 +11,8 @@ import math
 
 class ChecksumThread(QThread):
     result = pyqtSignal(str)
+    # إشارة لإرسال أخطاء العملية الخارجية إلى الواجهة الرسومية
+    process_error_signal = pyqtSignal(str)
 
     def __init__(self, path, is_device=False, limit_bytes=None):
         super().__init__()
@@ -20,26 +22,28 @@ class ChecksumThread(QThread):
         self._process = None
 
     def run(self):
-        if not self.is_device:
-            try:
-                hasher = hashlib.sha256()
-                read_bytes = 0
-                with open(self.path, 'rb') as f:
-                    while True:
-                        if self.limit_bytes and read_bytes >= self.limit_bytes:
-                            break
-                        chunk = f.read(4 * 1024 * 1024)
-                        if not chunk:
-                            break
-                        if self.limit_bytes:
-                            chunk = chunk[:self.limit_bytes - read_bytes]
-                        hasher.update(chunk)
-                        read_bytes += len(chunk)
-                self.result.emit(hasher.hexdigest())
-            except Exception as e:
-                self.result.emit(f"Error: {e}")
-        else:
-            try:
+        # وضع كل محتويات run() داخل try-except عامة لالتقاط أي أخطاء غير متوقعة
+        try:
+            if not self.is_device:
+                try:
+                    hasher = hashlib.sha256()
+                    read_bytes = 0
+                    with open(self.path, 'rb') as f:
+                        while True:
+                            if self.limit_bytes and read_bytes >= self.limit_bytes:
+                                break
+                            chunk = f.read(4 * 1024 * 1024)
+                            if not chunk:
+                                break
+                            if self.limit_bytes:
+                                chunk = chunk[:self.limit_bytes - read_bytes]
+                            hasher.update(chunk)
+                            read_bytes += len(chunk)
+                    self.result.emit(hasher.hexdigest())
+                except Exception as e:
+                    self.result.emit(f"Error reading file for checksum: {e}")
+            else:
+                # المنطق المعدل لحساب مجموع التحقق لأجهزة الـ USB
                 bs = 4 * 1024 * 1024
                 count_blocks = math.ceil(self.limit_bytes / bs) if self.limit_bytes else None
 
@@ -51,22 +55,50 @@ class ChecksumThread(QThread):
                 command_parts = ["pkexec", "sh", "-c", command_string]
 
                 self._process = QProcess()
+                # ربط إشارة الخطأ الخاصة بـ QProcess لالتقاط أي مشاكل مبكرة
+                self._process.errorOccurred.connect(self._handle_process_error_occurred)
+                # بدء العملية
                 self._process.start(command_parts[0], command_parts[1:])
-                self._process.waitForFinished(-1)
+                # الانتظار حتى تنتهي العملية
+                # -1 تعني الانتظار إلى الأبد، ولكن من المهم أن يكون هناك معالجة للأخطاء
+                if not self._process.waitForFinished(-1):
+                    # إذا انتهت العملية بفشل غير متوقع (مثل تعليق أو قتل)
+                    error_msg = f"QProcess failed to finish: {self._process.errorString()}"
+                    self.result.emit(f"Error: {error_msg}")
+                    return
 
+                # قراءة كل الإخراج من العملية وفك ترميزه
                 output = self._process.readAllStandardOutput().data().decode().strip()
+                error_output = self._process.readAllStandardError().data().decode().strip() # التقاط أي إخراج للخطأ
+
                 exit_code = self._process.exitCode()
                 exit_status = self._process.exitStatus()
 
+                # التحقق من أن العملية انتهت بنجاح
                 if exit_code == 0 and exit_status == QProcess.NormalExit:
                     checksum = output.split(' ')[0]
                     self.result.emit(checksum)
                 else:
-                    self.result.emit(f"Error executing command: {output}. Exit code: {exit_code}")
+                    # في حالة حدوث خطأ في تنفيذ الأمر
+                    error_details = f"Command: {' '.join(command_parts)}\n" \
+                                    f"Exit Code: {exit_code}\n" \
+                                    f"Exit Status: {exit_status}\n" \
+                                    f"Stdout: {output}\n" \
+                                    f"Stderr: {error_output if error_output else 'No stderr output'}"
+                    self.result.emit(f"Error executing command: Check logs for details. (Possible permission issue or command not found)")
+                    self.process_error_signal.emit(f"Detailed Command Error:\n{error_details}") # إرسال التفاصيل للسجل الرئيسي
 
-            except Exception as e:
-                self.result.emit(f"Error: {e}")
+        except Exception as e:
+            # التقاط أي استثناءات تحدث داخل دالة run نفسها
+            self.result.emit(f"Critical Thread Error: {e}")
 
+    # دالة معالجة أخطاء QProcess
+    def _handle_process_error_occurred(self, error):
+        error_string = self._process.errorString()
+        self.result.emit(f"QProcess internal error: {error_string}")
+        self.process_error_signal.emit(f"QProcess Error Occurred: {error_string}")
+
+    # دالة اختيارية لإيقاف العملية إذا كانت لا تزال قيد التشغيل
     def stop(self):
         if self._process and self._process.state() == QProcess.Running:
             self._process.terminate()
@@ -181,11 +213,9 @@ class USBIsoWriter(QWidget):
         self.log.append("[🔍] Calculating ISO checksum...")
         self.iso_checksum_thread = ChecksumThread(self.iso_path)
         self.iso_checksum_thread.result.connect(self.handle_iso_checksum)
+        # ربط إشارة الخطأ الجديدة
+        self.iso_checksum_thread.process_error_signal.connect(self.log.append)
         self.iso_checksum_thread.start()
-
-    def handle_iso_checksum(self, result):
-        self.iso_checksum = result
-        self.log.append(f"[✔] ISO Checksum: {result}")
 
     def checksum_usb(self):
         if not self.iso_path:
@@ -200,7 +230,13 @@ class USBIsoWriter(QWidget):
         self.log.append("[🔍] Calculating USB checksum (same size as ISO)...")
         self.usb_checksum_thread = ChecksumThread(device, is_device=True, limit_bytes=size)
         self.usb_checksum_thread.result.connect(self.handle_usb_checksum)
+        # ربط إشارة الخطأ الجديدة هنا أيضاً
+        self.usb_checksum_thread.process_error_signal.connect(self.log.append)
         self.usb_checksum_thread.start()
+
+    def handle_iso_checksum(self, result):
+        self.iso_checksum = result
+        self.log.append(f"[✔] ISO Checksum: {result}")
 
     def handle_usb_checksum(self, result):
         self.usb_checksum = result
