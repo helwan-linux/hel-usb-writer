@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Helwan USB ISO Writer
+Comment=A simple tool to write ISO images to USB drives
+Exec=sh -c "python3 /path/to/your/app/helwan_usb_iso_writer.py"
+Icon=/path/to/your/app/helwan-usb.png
+Terminal=false
+Type=Application
+Categories=System;Utility;
+Keywords=usb;iso;writer;bootable;checksum;
+StartupNotify=true
+
