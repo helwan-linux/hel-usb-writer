@@ -246,8 +246,7 @@ class USBIsoWriter(QWidget):
                 self.log.append("[✅] MATCH: ISO and USB checksums match.")
             else:
                 self.log.append("[❌] MISMATCH: ISO and USB checksums differ.")
-                self.log.append("[💡] ملاحظة: قد يختلف مجموع التحقق للـ USB عن ملف ISO بسبب البيانات الوصفية أو التعبئة على الجهاز الخام. إذا كانت الفلاشة تعمل وتُقلع بشكل صحيح (كما في اختبار QEMU أو الإقلاع الفعلي)، فمن المرجح أنها سليمة وقابلة للاستخدام.")
-
+                self.log.append("[💡] Note: USB checksum may differ from ISO due to metadata or padding on the raw device. If the USB works and boots correctly (as in QEMU or actual boot test), it is likely fine.")
     def write_iso(self):
         if not self.iso_path:
             QMessageBox.warning(self, "Error", "Please select an ISO file.")
