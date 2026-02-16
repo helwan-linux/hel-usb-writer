@@ -1,9 +1,10 @@
 import sys
 import os
 import hashlib
+import re
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QFileDialog, QVBoxLayout, QPushButton, QLabel,
-    QComboBox, QTextEdit, QMessageBox, QHBoxLayout
+    QComboBox, QTextEdit, QMessageBox, QHBoxLayout, QProgressBar
 )
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtCore import QProcess, Qt, QThread, pyqtSignal
@@ -11,7 +12,6 @@ import math
 
 class ChecksumThread(QThread):
     result = pyqtSignal(str)
-    # إشارة لإرسال أخطاء العملية الخارجية إلى الواجهة الرسومية
     process_error_signal = pyqtSignal(str)
 
     def __init__(self, path, is_device=False, limit_bytes=None):
@@ -22,270 +22,182 @@ class ChecksumThread(QThread):
         self._process = None
 
     def run(self):
-        # وضع كل محتويات run() داخل try-except عامة لالتقاط أي أخطاء غير متوقعة
         try:
             if not self.is_device:
-                try:
-                    hasher = hashlib.sha256()
-                    read_bytes = 0
-                    with open(self.path, 'rb') as f:
-                        while True:
-                            if self.limit_bytes and read_bytes >= self.limit_bytes:
-                                break
-                            chunk = f.read(4 * 1024 * 1024)
-                            if not chunk:
-                                break
-                            if self.limit_bytes:
-                                chunk = chunk[:self.limit_bytes - read_bytes]
-                            hasher.update(chunk)
-                            read_bytes += len(chunk)
-                    self.result.emit(hasher.hexdigest())
-                except Exception as e:
-                    self.result.emit(f"Error reading file for checksum: {e}")
+                hasher = hashlib.sha256()
+                read_bytes = 0
+                with open(self.path, 'rb') as f:
+                    while True:
+                        if self.limit_bytes and read_bytes >= self.limit_bytes:
+                            break
+                        chunk = f.read(4 * 1024 * 1024)
+                        if not chunk: break
+                        if self.limit_bytes:
+                            chunk = chunk[:self.limit_bytes - read_bytes]
+                        hasher.update(chunk)
+                        read_bytes += len(chunk)
+                self.result.emit(hasher.hexdigest())
             else:
-                # المنطق المعدل لحساب مجموع التحقق لأجهزة الـ USB
                 bs = 4 * 1024 * 1024
                 count_blocks = math.ceil(self.limit_bytes / bs) if self.limit_bytes else None
-
-                if count_blocks:
-                    command_string = f"dd if={self.path} bs={bs} count={count_blocks} status=none 2>/dev/null | sha256sum"
-                else:
-                    command_string = f"dd if={self.path} bs={bs} status=none 2>/dev/null | sha256sum"
-
-                command_parts = ["pkexec", "sh", "-c", command_string]
-
+                cmd = f"dd if={self.path} bs={bs} count={count_blocks} status=none | sha256sum" if count_blocks else f"dd if={self.path} bs={bs} status=none | sha256sum"
+                
                 self._process = QProcess()
-                # ربط إشارة الخطأ الخاصة بـ QProcess لالتقاط أي مشاكل مبكرة
-                self._process.errorOccurred.connect(self._handle_process_error_occurred)
-                # بدء العملية
-                self._process.start(command_parts[0], command_parts[1:])
-                # الانتظار حتى تنتهي العملية
-                # -1 تعني الانتظار إلى الأبد، ولكن من المهم أن يكون هناك معالجة للأخطاء
+                self._process.start("pkexec", ["sh", "-c", cmd])
                 if not self._process.waitForFinished(-1):
-                    # إذا انتهت العملية بفشل غير متوقع (مثل تعليق أو قتل)
-                    error_msg = f"QProcess failed to finish: {self._process.errorString()}"
-                    self.result.emit(f"Error: {error_msg}")
+                    self.result.emit("Error: Process failed")
                     return
-
-                # قراءة كل الإخراج من العملية وفك ترميزه
                 output = self._process.readAllStandardOutput().data().decode().strip()
-                error_output = self._process.readAllStandardError().data().decode().strip() # التقاط أي إخراج للخطأ
-
-                exit_code = self._process.exitCode()
-                exit_status = self._process.exitStatus()
-
-                # التحقق من أن العملية انتهت بنجاح
-                if exit_code == 0 and exit_status == QProcess.NormalExit:
-                    checksum = output.split(' ')[0]
-                    self.result.emit(checksum)
-                else:
-                    # في حالة حدوث خطأ في تنفيذ الأمر
-                    error_details = f"Command: {' '.join(command_parts)}\n" \
-                                    f"Exit Code: {exit_code}\n" \
-                                    f"Exit Status: {exit_status}\n" \
-                                    f"Stdout: {output}\n" \
-                                    f"Stderr: {error_output if error_output else 'No stderr output'}"
-                    self.result.emit(f"Error executing command: Check logs for details. (Possible permission issue or command not found)")
-                    self.process_error_signal.emit(f"Detailed Command Error:\n{error_details}") # إرسال التفاصيل للسجل الرئيسي
-
+                self.result.emit(output.split(' ')[0] if output else "Error")
         except Exception as e:
-            # التقاط أي استثناءات تحدث داخل دالة run نفسها
-            self.result.emit(f"Critical Thread Error: {e}")
-
-    # دالة معالجة أخطاء QProcess
-    def _handle_process_error_occurred(self, error):
-        error_string = self._process.errorString()
-        self.result.emit(f"QProcess internal error: {error_string}")
-        self.process_error_signal.emit(f"QProcess Error Occurred: {error_string}")
-
-    # دالة اختيارية لإيقاف العملية إذا كانت لا تزال قيد التشغيل
-    def stop(self):
-        if self._process and self._process.state() == QProcess.Running:
-            self._process.terminate()
-            self._process.waitForFinished(1000)
-            if self._process.state() == QProcess.Running:
-                self._process.kill()
-
+            self.result.emit(f"Error: {e}")
 
 class USBIsoWriter(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Helwan USB ISO Writer")
-        self.setGeometry(400, 200, 600, 500)
-        # تحديد المسار المطلق للأيقونة بعد التثبيت بواسطة PKGBUILD
-        # يجب أن تكون الأيقونة مثبتة في /usr/share/pixmaps/helwan-usb.png
+        self.setGeometry(400, 200, 600, 550)
+        
+        # الهوية البصرية لـ Helwan Linux [cite: 2026-01-26]
         icon_path = "/usr/share/pixmaps/helwan-usb.png"
         
-        # التأكد من وجود ملف الأيقونة قبل محاولة استخدامه
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
-        else:
-            # يمكن وضع أيقونة احتياطية أو رسالة خطأ في السجل إذا لم يتم العثور على الأيقونة
-            print(f"Warning: Icon file not found at {icon_path}. Using default icon.")
-
         layout = QVBoxLayout()
-
+        
+        # حل مشكلة الأيقونة: التحجيم البرمجي لتجنب خطأ xcb request length
         logo = QLabel()
-        # تحديد المسار المطلق للأيقونة للشعار داخل النافذة
         if os.path.exists(icon_path):
             pixmap = QPixmap(icon_path)
-            logo.setPixmap(pixmap.scaledToWidth(64))
+            # تصغير الأيقونة للنافذة (Taskbar)
+            scaled_icon = pixmap.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.setWindowIcon(QIcon(scaled_icon))
+            # تصغير الأيقونة للشعار داخل البرنامج
+            logo.setPixmap(pixmap.scaledToWidth(80, Qt.SmoothTransformation))
         else:
-            # يمكن وضع صورة رمزية أو نص بديل إذا لم يتم العثور على الأيقونة
-            logo.setText("Helwan USB")
-            logo.setAlignment(Qt.AlignCenter)
-
+            logo.setText("💿 Helwan USB Writer")
+            logo.setStyleSheet("font-size: 18px; font-weight: bold;")
+        
         layout.addWidget(logo, alignment=Qt.AlignCenter)
 
-        self.iso_label = QLabel("Selected ISO: None")
-        self.choose_iso_button = QPushButton("Choose ISO File")
+        # اختيار الـ ISO
+        self.iso_label = QLabel("ISO File: Not Selected")
+        self.iso_label.setStyleSheet("color: #555;")
+        self.choose_iso_button = QPushButton("Select ISO Image")
         self.choose_iso_button.clicked.connect(self.choose_iso)
 
-        self.device_label = QLabel("Selected USB Device:")
+        # اختيار الجهاز (USB فقط لضمان الأمان) [cite: 2026-01-26]
         self.device_combo = QComboBox()
-        self.refresh_devices_button = QPushButton("Refresh USB Devices")
-        self.refresh_devices_button.clicked.connect(self.refresh_devices)
+        self.refresh_button = QPushButton("🔄 Refresh")
+        self.refresh_button.clicked.connect(self.refresh_devices)
+        
+        device_layout = QHBoxLayout()
+        device_layout.addWidget(self.device_combo, 4)
+        device_layout.addWidget(self.refresh_button, 1)
 
-        device_selection_layout = QHBoxLayout()
-        device_selection_layout.addWidget(self.device_combo)
-        device_selection_layout.addWidget(self.refresh_devices_button)
+        # شريط التقدم المرئي
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.hide()
 
-        self.iso_checksum_button = QPushButton("Checksum ISO")
-        self.iso_checksum_button.clicked.connect(self.checksum_iso)
-
-        self.usb_checksum_button = QPushButton("Checksum USB")
-        self.usb_checksum_button.clicked.connect(self.checksum_usb)
-
-        self.write_button = QPushButton("Write ISO to USB")
+        # الأزرار الرئيسية
+        self.write_button = QPushButton("🔥 Write to USB")
+        self.write_button.setStyleSheet("background-color: #d32f2f; color: white; font-weight: bold; padding: 10px;")
         self.write_button.clicked.connect(self.write_iso)
-
-        buttons_layout = QHBoxLayout()
-        buttons_layout.addWidget(self.iso_checksum_button)
-        buttons_layout.addWidget(self.usb_checksum_button)
-        buttons_layout.addWidget(self.write_button)
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMaximumHeight(120)
 
+        # ترتيب العناصر
+        layout.addWidget(QLabel("<b>1. Select Image:</b>"))
         layout.addWidget(self.iso_label)
         layout.addWidget(self.choose_iso_button)
-        layout.addWidget(self.device_label)
-        layout.addLayout(device_selection_layout)
-        layout.addLayout(buttons_layout)
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("<b>2. Select USB Drive:</b>"))
+        layout.addLayout(device_layout)
+        layout.addSpacing(15)
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.write_button)
+        layout.addWidget(QLabel("<b>Activity Log:</b>"))
         layout.addWidget(self.log)
 
         self.setLayout(layout)
         self.iso_path = None
-        self.iso_checksum = None
-        self.usb_checksum = None
-        self.process = None
-
         self.refresh_devices()
 
+    def refresh_devices(self):
+        self.device_combo.clear()
+        # فلترة ذكية لضمان إظهار الفلاشات فقط [cite: 2026-01-26]
+        cmd = "lsblk -p -d -n -o NAME,SIZE,MODEL,TRAN | grep 'usb'"
+        result = os.popen(cmd).read().strip().split("\n")
+        
+        if not result or result == ['']:
+            self.device_combo.addItem("No USB drives detected")
+            self.write_button.setEnabled(False)
+        else:
+            for line in result:
+                self.device_combo.addItem(line.strip())
+            self.write_button.setEnabled(True)
+
     def choose_iso(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose ISO File", "", "ISO Files (*.iso)")
+        path, _ = QFileDialog.getOpenFileName(self, "Select ISO", "", "ISO Files (*.iso)")
         if path:
             self.iso_path = path
-            self.iso_label.setText(f"Selected ISO: {os.path.basename(path)}")
+            self.iso_label.setText(f"File: {os.path.basename(path)}")
 
-    def refresh_devices(self):
-        self.log.append("[🔍] Refreshing USB devices...")
-        self.device_combo.clear()
-        result = os.popen("lsblk -o NAME,SIZE,MODEL,TRAN,TYPE -dn").read().strip().split("\n")
-        found_devices = False
-        for line in result:
-            if "disk" in line:
-                parts = line.split()
-                if len(parts) >= 4:
-                    name, size, model, tran = parts[:4]
-                    device_path = f"/dev/{name}"
-                    self.device_combo.addItem(f"{device_path} ({size} - {model})")
-                    found_devices = True
-        if not found_devices:
-            self.log.append("[💡] No USB devices found. Please ensure they are connected.")
-        else:
-            self.log.append("[✔] USB devices refreshed.")
-
-    def checksum_iso(self):
-        if not self.iso_path:
-            QMessageBox.warning(self, "Error", "Please select an ISO file.")
-            return
-        self.log.append("[🔍] Calculating ISO checksum...")
-        self.iso_checksum_thread = ChecksumThread(self.iso_path)
-        self.iso_checksum_thread.result.connect(self.handle_iso_checksum)
-        # ربط إشارة الخطأ الجديدة
-        self.iso_checksum_thread.process_error_signal.connect(self.log.append)
-        self.iso_checksum_thread.start()
-
-    def checksum_usb(self):
-        if not self.iso_path:
-            QMessageBox.warning(self, "Error", "Please select an ISO first.")
-            return
-        device_entry = self.device_combo.currentText()
-        if not device_entry:
-            QMessageBox.warning(self, "Error", "Please select a USB device.")
-            return
-        device = device_entry.split()[0]
-        size = os.path.getsize(self.iso_path)
-        self.log.append("[🔍] Calculating USB checksum (same size as ISO)...")
-        self.usb_checksum_thread = ChecksumThread(device, is_device=True, limit_bytes=size)
-        self.usb_checksum_thread.result.connect(self.handle_usb_checksum)
-        # ربط إشارة الخطأ الجديدة هنا أيضاً
-        self.usb_checksum_thread.process_error_signal.connect(self.log.append)
-        self.usb_checksum_thread.start()
-
-    def handle_iso_checksum(self, result):
-        self.iso_checksum = result
-        self.log.append(f"[✔] ISO Checksum: {result}")
-
-    def handle_usb_checksum(self, result):
-        self.usb_checksum = result
-        self.log.append(f"[✔] USB Checksum: {result}")
-        if self.iso_checksum and self.usb_checksum:
-            if self.iso_checksum == self.usb_checksum:
-                self.log.append("[✅] MATCH: ISO and USB checksums match.")
-            else:
-                self.log.append("[❌] MISMATCH: ISO and USB checksums differ.")
-                self.log.append("[💡] Note: USB checksum may differ from ISO due to metadata or padding on the raw device. If the USB works and boots correctly (as in QEMU or actual boot test), it is likely fine.")
     def write_iso(self):
         if not self.iso_path:
-            QMessageBox.warning(self, "Error", "Please select an ISO file.")
-            return
-        device_entry = self.device_combo.currentText()
-        if not device_entry:
-            QMessageBox.warning(self, "Error", "Please select a USB device.")
-            return
-        device = device_entry.split()[0]
-        confirm = QMessageBox.question(
-            self,
-            "Confirm Write",
-            f"Are you sure you want to write:\n\n{self.iso_path}\n\nto\n{device} ?\n\nAll data on the USB will be lost!",
+            return QMessageBox.warning(self, "Error", "Please select an ISO first.")
+        
+        device_info = self.device_combo.currentText()
+        if "No USB" in device_info: return
+        
+        device_path = device_info.split()[0]
+        
+        confirm = QMessageBox.critical(
+            self, "Final Warning",
+            f"Are you sure?\n\nThis will PERMANENTLY ERASE everything on:\n{device_info}\n\nProceed?",
             QMessageBox.Yes | QMessageBox.No
         )
-        if confirm != QMessageBox.Yes:
-            return
+        
+        if confirm == QMessageBox.Yes:
+            self.start_writing(device_path)
 
-        self.log.append(f"[INFO] Writing {self.iso_path} to {device}...")
-        command = ["pkexec", "dd", f"if={self.iso_path}", f"of={device}", "bs=4M", "status=progress", "oflag=sync"]
+    def start_writing(self, device):
+        self.log.append(f"[!] Starting write to {device}...")
+        self.write_button.setEnabled(False)
+        self.progress_bar.show()
+        self.progress_bar.setValue(0)
+        
+        # استخدام dd مع ميزة تتبع التقدم
+        cmd = ["pkexec", "dd", f"if={self.iso_path}", f"of={device}", "bs=4M", "status=progress", "oflag=sync"]
+        
         self.process = QProcess(self)
-        self.process.readyReadStandardOutput.connect(self.handle_stdout)
-        self.process.readyReadStandardError.connect(self.handle_stderr)
-        self.process.finished.connect(self.process_finished)
-        self.process.start(command[0], command[1:])
+        self.process.readyReadStandardError.connect(self.update_progress)
+        self.process.finished.connect(self.finish_write)
+        self.process.start(cmd[0], cmd[1:])
 
-    def handle_stdout(self):
-        data = self.process.readAllStandardOutput().data().decode()
-        self.log.append(data)
-
-    def handle_stderr(self):
+    def update_progress(self):
         data = self.process.readAllStandardError().data().decode()
-        self.log.append(data)
+        match = re.search(r'(\d+) bytes', data)
+        if match and self.iso_path:
+            written = int(match.group(1))
+            total = os.path.getsize(self.iso_path)
+            percent = int((written / total) * 100)
+            self.progress_bar.setValue(percent)
 
-    def process_finished(self):
-        self.log.append("[✔] Done writing ISO.")
+    def finish_write(self, exit_code, exit_status):
+        self.write_button.setEnabled(True)
+        if exit_code == 0:
+            self.progress_bar.setValue(100)
+            self.log.append("[✔] Success! You can safely remove the USB.")
+            QMessageBox.information(self, "Done", "ISO has been successfully written!")
+        else:
+            self.log.append("[❌] Error: Operation failed or cancelled.")
+            self.progress_bar.hide()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
     writer = USBIsoWriter()
     writer.show()
     sys.exit(app.exec_())
