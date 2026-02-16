@@ -1,7 +1,7 @@
 # Maintainer: Your Name <your.email@example.com>
 pkgname=hel-usb-writer
-pkgver=0.1 # تم التغيير إلى 0.1 لأنه لا يوجد إصدار v1.0.0 على GitHub، هذا للاصدارات التجريبية
-pkgrel=1
+pkgver=1.0 # تم التغيير إلى 0.1 لأنه لا يوجد إصدار v1.0.0 على GitHub، هذا للاصدارات التجريبية
+pkgrel=0
 pkgdesc="A simple tool to write ISO images to USB drives with checksum verification."
 arch=('x86_64')
 url="https://github.com/helwan-linux/$pkgname" # رابط مشروعك على GitHub
